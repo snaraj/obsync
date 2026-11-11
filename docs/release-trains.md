@@ -15,15 +15,16 @@ are applied on GitHub; they describe planned delivery, not completed acceptance.
 | [v1.1.11](https://github.com/snaraj/obsync/milestone/40) | Force sync with the server, a copyable recovery backup with a direct way back to the encryption upgrade, and pairing again after a missed encryption upgrade | #364, #369, #370 |
 | [v1.1.12](https://github.com/snaraj/obsync/milestone/41) | Pairing again after a rotation without a false upload question, and the mobile harness tests' disk-space dependence | #373, #376 |
 | [v1.1.13](https://github.com/snaraj/obsync/milestone/34) | One folder record per folder id, conflict notices grouped per note, a too-large file refused before upload, plain HTTP refused at the transport, a stopped status, a revoked device's addresses deleted after 30 days, quieter server logs, and the Node and Rust builder images | #321, #330, #340, #341, #375, #386, #387; dependency PRs #372, #381 |
-| [v1.1.14](https://github.com/snaraj/obsync/milestone/35) | Management authentication, existing-server setup, device lifecycle, MCP observe, readable logs, pairing confirmation and physical-phone blind-start/readback evidence, remaining concurrent-input timing, and final integrated acceptance | #254, #256, #257, #258, #261, #262, #290, #314, #339 |
-| [v1.1.15](https://github.com/snaraj/obsync/milestone/32) | Deferred export, storage/deployment, backup/recovery and co-editing engine | #259, #260, #315, #317 |
-| [v1.1.16](https://github.com/snaraj/obsync/milestone/36) | Large-file limits, mobile streaming and measured device ceilings | #331, #332 |
+| [v1.1.14](https://github.com/snaraj/obsync/milestone/35) | Management authentication, device lifecycle, MCP observe, pairing confirmation and physical-phone blind-start/readback evidence, remaining concurrent-input timing, and final integrated acceptance | #290; [#254](https://github.com/snaraj/obsync/issues/254): needs a physical phone (from #314, #339), roadmap features (from #256, #258, #261), closing evidence (from #262) |
+| [v1.1.15](https://github.com/snaraj/obsync/milestone/32) | Deferred export, backup/recovery and co-editing engine | [#254](https://github.com/snaraj/obsync/issues/254): roadmap features (from #260, #315, #317) |
+| [v1.1.16](https://github.com/snaraj/obsync/milestone/36) | Large-file limits, mobile streaming and measured device ceilings | [#254](https://github.com/snaraj/obsync/issues/254): large files (from #331, #332) |
 
 #325 separates the immediate measurements, pipeline improvements, reviewed
 state/migration design and bounded experiments from #315's later engine. Its
 experimental engine code does not ship in 1.1.7. #319 moves out of the deferred
-bucket into 1.1.7. #254 and #262 close only after the integrated 1.1.14 management
-train's public artifact and live acceptance; the explicit 1.1.15 work stays open.
+bucket into 1.1.7. #254 closes only after the integrated 1.1.14 management
+train's public artifact and live acceptance, with #262's closing evidence among
+its sections since 2026-11-10; the explicit 1.1.15 work stays open there.
 
 Owner decision, 2026-10-12: ship the security train (#344, #346, PR #347)
 first as **v1.1.8**, and move the previously agreed v1.1.8–v1.1.11 trains
@@ -105,9 +106,22 @@ addresses deleted after 30 days, the Privacy navigation entry, the stale
 wording); #386 and #387, found in its release audit; and the builder images
 (#381, #372, carried by hand). #321, #330 and #341 move to the v1.1.13
 milestone; #321 keeps its larger catalogue open, and #330's lifted-ceiling
-work stays with #331 and #332. #290 (live pairing confirmation), #314 (phone
-readback) and #339 (concurrent typing) need phone sessions and move to
-**v1.1.14**, their issues and acceptance unchanged.
+work stays with the large-files items #254 now carries. #290 (live pairing
+confirmation) needs a phone session and moves to **v1.1.14**, beside #314
+(phone readback) and #339 (concurrent typing), which #254 now carries; their
+acceptance is unchanged.
+
+Backlog collapse, 2026-11-10, done by the coordinator at the owner's direction:
+#256, #258, #260, #261, #262, #314, #315, #317, #331, #332 and #339 are closed
+into [#254](https://github.com/snaraj/obsync/issues/254), the single open
+tracker, which carries one section per item with what is left and what would
+finish it. #257 and #259 were already closed as not planned, on the owner's
+decision of 2026-11-02. The rows after v1.1.13 name #254's sections instead of
+the closed issues, and drop the scope no row carries any more: existing-server
+setup (#257), storage and deployment (#259), and readable logs, whose rest
+stays on #321. The order of the trains, their acceptance below and the rule at
+the end of this page are unchanged. The issues 1.1.13 touches (#290,
+#321, #340, #341) stay open until it ships, then join #254.
 
 ## Composition and acceptance
 
@@ -150,8 +164,8 @@ The release order follows the table; no date or completed capability is promised
   proof while typing stays open on that issue.
 - 1.1.14 requires the integrated CLI, native Obsidian and real MCP-host journeys,
   applicable security/performance gates and exact public artifact proof, and
-  pairing-state readback and physical-phone acceptance for #290, #314 and #339;
-  emulator rehearsal is supplemental evidence.
+  pairing-state readback and physical-phone acceptance for #290 and for #254's
+  phone items (from #314 and #339); emulator rehearsal is supplemental evidence.
 - 1.1.15 depends on the reviewed designs and retains every deferred security,
   recovery, native-device, mixed-version and convergence requirement.
 - 1.1.16 requires measured size and watermark boundaries, mixed-version
