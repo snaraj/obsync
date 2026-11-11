@@ -1489,8 +1489,9 @@ export class FakeTimers {
    *
    * Once the virtual clock can move no further and nothing is due, only work
    * already in flight can satisfy a predicate. A wait that then sees no timer
-   * set, cleared or fired for `stallMs` is refused as stalled, with what it
-   * observed, rather than after the whole budget.
+   * set, cleared or fired for `stallMs`, and nothing due on the clock as it
+   * stands after the yield and the predicate, is refused as stalled, with
+   * what it observed, rather than after the whole budget.
    */
   async run(advanceMs = 1000, until = null, budgetMs = WAIT_BUDGET_MS) {
     this.now += advanceMs;
@@ -1524,9 +1525,18 @@ export class FakeTimers {
         if (Date.now() >= deadline) {
           throw new Error(`fake timers: waited ${budgetMs} ms of real time and the condition never held: ${this.observed(advances)}`);
         }
+        // The yield and the predicate both run code that can set or clear a
+        // timer, or move the clock onto a registered one (`editListed` drives
+        // a parked rename's retry so), so the stall is judged on the queue and
+        // clock as they are now, not as this round found them.
+        if (touched !== this.touched) {
+          touched = this.touched;
+          quietSince = performance.now();
+        }
         const spent = advanceMs === 0 || advances >= advanceLimit;
-        if (spent && due.length === 0 && performance.now() - quietSince >= this.stallMs) {
-          throw new Error(`fake timers: stalled, no timer moved for ${this.stallMs} ms of real time with the virtual clock spent and the condition false: ${this.observed(advances)}`);
+        const dueNow = this.entries.some((entry) => entry.due <= this.now);
+        if (spent && !dueNow && performance.now() - quietSince >= this.stallMs) {
+          throw new Error(`fake timers: stalled, nothing due and no timer set, cleared or fired for ${this.stallMs} ms of real time with the virtual clock spent and the condition false: ${this.observed(advances)}`);
         }
       } else if (Date.now() >= deadline) {
         return true;
