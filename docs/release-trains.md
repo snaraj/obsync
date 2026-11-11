@@ -14,10 +14,10 @@ are applied on GitHub; they describe planned delivery, not completed acceptance.
 | [v1.1.10](https://github.com/snaraj/obsync/milestone/39) | Maintenance: dependency updates, CI flake repairs, dashboard language and control contrast, neutral documentation, comment cleanup outside the plugin | #328, #338, #341, #343, #359, #360, #361, #366 |
 | [v1.1.11](https://github.com/snaraj/obsync/milestone/40) | Force sync with the server, a copyable recovery backup with a direct way back to the encryption upgrade, and pairing again after a missed encryption upgrade | #364, #369, #370 |
 | [v1.1.12](https://github.com/snaraj/obsync/milestone/41) | Pairing again after a rotation without a false upload question, and the mobile harness tests' disk-space dependence | #373, #376 |
-| [v1.1.13](https://github.com/snaraj/obsync/milestone/34) | Pairing confirmation, physical-phone blind-start/readback, remaining concurrent-input timing and conflict-notice acceptance | #290, #314, #339, #340 |
-| [v1.1.14](https://github.com/snaraj/obsync/milestone/35) | Management authentication, existing-server setup, device lifecycle, MCP observe, readable logs and final integrated acceptance | #254, #256, #257, #258, #261, #262, #321 |
+| [v1.1.13](https://github.com/snaraj/obsync/milestone/34) | One folder record per folder id, conflict notices grouped per note, a too-large file refused before upload, plain HTTP refused at the transport, a stopped status, a revoked device's addresses deleted after 30 days, quieter server logs, and the Node and Rust builder images | #321, #330, #340, #341, #375, #386, #387; dependency PRs #372, #381 |
+| [v1.1.14](https://github.com/snaraj/obsync/milestone/35) | Management authentication, existing-server setup, device lifecycle, MCP observe, readable logs, pairing confirmation and physical-phone blind-start/readback evidence, remaining concurrent-input timing, and final integrated acceptance | #254, #256, #257, #258, #261, #262, #290, #314, #339 |
 | [v1.1.15](https://github.com/snaraj/obsync/milestone/32) | Deferred export, storage/deployment, backup/recovery and co-editing engine | #259, #260, #315, #317 |
-| [v1.1.16](https://github.com/snaraj/obsync/milestone/36) | Large-file limits, mobile streaming and measured device ceilings | #330, #331, #332 |
+| [v1.1.16](https://github.com/snaraj/obsync/milestone/36) | Large-file limits, mobile streaming and measured device ceilings | #331, #332 |
 
 #325 separates the immediate measurements, pipeline improvements, reviewed
 state/migration design and bounded experiments from #315's later engine. Its
@@ -97,6 +97,18 @@ chose to skip the pre-merge phone and emulator journeys: the owner's iPhone
 pairing again on the published release is its phone journey, recorded
 afterwards, and a failure there is fixed in the next patch.
 
+Composition, 2026-11-10, directed by the coordinator for the 1.1.13 train:
+**v1.1.13** carries #375, #340 and #330 (narrowed on 2026-11-02 to refusing a
+too-large file before any upload); #321's small slice (answered probes at
+debug, one `device_joined` line); #341's follow-ups (a revoked device's
+addresses deleted after 30 days, the Privacy navigation entry, the stale
+wording); #386 and #387, found in its release audit; and the builder images
+(#381, #372, carried by hand). #321, #330 and #341 move to the v1.1.13
+milestone; #321 keeps its larger catalogue open, and #330's lifted-ceiling
+work stays with #331 and #332. #290 (live pairing confirmation), #314 (phone
+readback) and #339 (concurrent typing) need phone sessions and move to
+**v1.1.14**, their issues and acceptance unchanged.
+
 ## Composition and acceptance
 
 Each numbered release is assembled into one artifact PR before owner merge.
@@ -131,10 +143,15 @@ The release order follows the table; no date or completed capability is promised
   server's evidence and the plugin suite, composed build gates, independent
   exact-head review, authenticated artifacts and live server delivery. Its
   phone journey has the release-specific owner decision above.
-- 1.1.13 requires pairing-state readback and physical-phone acceptance; emulator
-  rehearsal is supplemental evidence.
+- 1.1.13 requires composed build gates, its desktop validation runs (#375 on a
+  case-folding filesystem, #290's live pairing during a long first sync)
+  recorded with what they do not show, independent exact-head review,
+  authenticated artifacts and live server delivery. #340's native visual
+  proof while typing stays open on that issue.
 - 1.1.14 requires the integrated CLI, native Obsidian and real MCP-host journeys,
-  applicable security/performance gates and exact public artifact proof.
+  applicable security/performance gates and exact public artifact proof, and
+  pairing-state readback and physical-phone acceptance for #290, #314 and #339;
+  emulator rehearsal is supplemental evidence.
 - 1.1.15 depends on the reviewed designs and retains every deferred security,
   recovery, native-device, mixed-version and convergence requirement.
 - 1.1.16 requires measured size and watermark boundaries, mixed-version
