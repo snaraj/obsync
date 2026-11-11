@@ -5,6 +5,27 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 1.1.13 - 2026-11-10
+
+### Fixed
+
+- A folder whose capitalisation was changed on another device, and then changed back on a computer, no longer leaves the folder inside it recorded twice. A later sync could have removed that inner folder from your other devices. A device now keeps one record per folder, and repairs a doubled record from an earlier version when it starts (#375).
+- When two devices edit one note at the same time and obsync keeps several copies, it shows one notice for that note that counts them, instead of one long notice per copy covering the note on a phone. Show sync status still names every copy (#340).
+- A file too large to sync is refused before any of it is uploaded, with a notice naming the file and its size. Before, the whole file was uploaded first, which could take hours, and only then refused. Most files up to about 19 GiB fit; the exact limit is between about 4.7 and 38 GiB, depending on the file's content (#330).
+- The status bar no longer shows the check mark while sync is stopped: while a folder selection is saved, while this device leaves its server, during a restore and during an encryption change. It shows a stop icon, and its tooltip says what stopped it.
+- Changing the folder selection or restoring a version while this device is leaving its server is refused until the leave finishes.
+
+### Security
+
+- A Server URL starting with `http://` that leads to another computer is refused for every request, not only when typed in Settings: an address saved by an earlier version, or edited by hand, sends nothing, and obsync says once what to change. `http://localhost` still works on a computer.
+- The server deletes a revoked device's network addresses and countries 30 days after it is revoked. Its name and its activity history stay. A device revoked before 1.1.13 counts its 30 days from the first hour the server runs 1.1.13 (#341).
+
+### Changed
+
+- The server writes one line to its log when a device joins by pairing, with the start of its id and its platform (#321).
+- Update the Node build runtime image to its current digest and the Rust builder image to 1.99.1 (#381, #372).
+- The documentation site lists the Privacy page under Trust and privacy (#341).
+
 ## 1.1.12 - 2026-11-02
 
 ### Fixed
