@@ -68,7 +68,10 @@ test("a copy the other device renames aside is announced once, under the name it
   assert.notEqual(first, renamed, "the fixture must rename the copy for this to prove anything");
   announceCopies(r.context);
 
-  assert.deepEqual(r.host.notices, ['obsync: kept both versions of "Same": another device\'s is in "Same (conflict from laptop, 2026-01-02 0304)".']);
+  assert.deepEqual(r.host.notices, ['obsync: kept both versions of "Same": another device\'s is in a copy beside it.']);
+  assert.equal(r.host.channel.recent()[0].text,
+    'kept both versions of "Same": another device\'s is in a copy beside it. The copy is "Same (conflict from laptop, 2026-01-02 0304)".',
+    "Recent does not name the copy");
   assert.deepEqual(r.host.toasts.map((toast) => toast.text), r.host.notices, "a conflict copy is shown under the quietest settings");
   assert.equal(r.host.text(renamed), THEIRS, "the named file is not the copy");
   announceCopies(r.context, true);
@@ -85,7 +88,39 @@ test("a copy nobody renames is announced where it is once the wait is over", asy
   assert.deepEqual(r.host.notices, [], "announced before the owner of the name had its chance to move it");
   r.host.clock += 1;
   announceCopies(r.context);
-  assert.deepEqual(r.host.notices, [`obsync: kept both versions of "Same": another device's is in "${copy.slice(copy.lastIndexOf("/") + 1, -3)}".`]);
+  assert.deepEqual(r.host.notices, ['obsync: kept both versions of "Same": another device\'s is in a copy beside it.']);
+  assert.equal(r.host.channel.recent()[0].text.split(" The copy is ")[1], `"${copy.slice(copy.lastIndexOf("/") + 1, -3)}".`);
+});
+
+test("two copies of one note from one device are one toast that counts them, and Recent names both (#340)", async () => {
+  const { r } = await keeper();
+  const first = copies(r.host)[0];
+  // A second copy of the same note, kept by the same settlement a moment later.
+  const second = "Notes/Same (conflict 2).md";
+  r.host.seed(second, "a later version beside it\n", 5000);
+  r.state.setFile(second, { fileId: "44".repeat(16), versionId: "55".repeat(32), mtime: 5000, size: 26, sha256: "" });
+  r.context.copies.set("44".repeat(16), { name: NOTE, at: r.host.clock });
+  announceCopies(r.context, true);
+  assert.deepEqual(r.host.toasts.map((toast) => toast.text), ['obsync: kept both versions of "Same": another device\'s is in a copy beside it (2 times).'],
+    "each copy opened a toast of its own");
+  assert.deepEqual(r.host.channel.recent().map((entry) => entry.text.split(" The copy is ")[1]).sort(),
+    [`"${first.slice(first.lastIndexOf("/") + 1, -3)}".`, '"Same (conflict 2)".'].sort());
+});
+
+test("copies of two notes from one device in one burst are one toast per note, never one toast for both (#340)", async () => {
+  const { r } = await keeper();
+  // A copy of ANOTHER note, kept by the same device a moment later: its own toast, by its own title.
+  const other = "Notes/Other.md", copy = "Notes/Other (conflict 2).md";
+  r.host.seed(other, "the other note\n", 5000);
+  r.state.setFile(other, { fileId: "66".repeat(16), versionId: "77".repeat(32), mtime: 5000, size: 15, sha256: "" });
+  r.host.seed(copy, "a later version beside it\n", 5000);
+  r.state.setFile(copy, { fileId: "44".repeat(16), versionId: "55".repeat(32), mtime: 5000, size: 26, sha256: "" });
+  r.context.copies.set("44".repeat(16), { name: other, at: r.host.clock });
+  announceCopies(r.context, true);
+  assert.deepEqual(r.host.toasts.map((toast) => toast.text).sort(), [
+    'obsync: kept both versions of "Other": another device\'s is in a copy beside it.',
+    'obsync: kept both versions of "Same": another device\'s is in a copy beside it.',
+  ], "copies of two notes were said as one");
 });
 
 /** One engine over the rig, one fake clock, and every status it reports. */

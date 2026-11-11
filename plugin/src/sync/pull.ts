@@ -211,10 +211,20 @@ export function unwritableText(path: string, reason: string): string {
   return `Cannot write ${path} here: ${UNWRITABLE[reason] ?? "it could not be written"}`;
 }
 
-/** A conflict copy, said one way wherever it is made: the note by title, the copy by its own. */
+/**
+ * A conflict copy, said one way wherever it is made: the note by title, the
+ * copy by its own name in Recent.
+ *
+ * ONE TOAST PER NOTE AND DEVICE (#340). Two devices typing into one note can
+ * leave a copy a second, and each copy's name in the sentence made each its
+ * own toast: on a phone, three long ones and "N more" over the note being
+ * typed in. The key is the note's and the device's, so every copy of one burst
+ * joins the toast already up and counts there; Recent keeps each copy's name.
+ */
 function keptBoth(context: SyncContext, path: string, copy: string, device?: string): void {
   context.host.notify({
-    kind: "conflict", text: `kept both versions of {notes}: {device}'s is in ${quoted(copy)}.`, paths: [path],
+    kind: "conflict", text: "kept both versions of {notes}: {device}'s is in a copy beside it.", paths: [path],
+    key: `conflict\u0000${path}\u0000${device ?? ""}`, detail: `The copy is ${quoted(copy)}.`,
     ...device === undefined ? {} : { device },
   });
 }

@@ -1743,7 +1743,10 @@ That is obsync refusing to throw away an edit, not a failure. See
 lines. Afterwards the last words one of them typed are missing from the note,
 and a note named `<note> (conflict from <device>, <date> UTC, <id>)` holds
 them. A notice said `obsync: kept both versions of "<note>": <device>'s is in
-"<copy>".`, or `obsync: stopped combining edits to "<note>"` (up to 1.1.4:
+a copy beside it.` (up to 1.1.12: `... <device>'s is in "<copy>".`; several
+copies of one note now share one notice that counts them, and **Recent** in
+**Show sync status** names each copy), or `obsync: stopped combining edits to
+"<note>"` (up to 1.1.4:
 `obsync kept both versions of <note>` or `obsync stopped merging <note>`). It
 happens most on a busy computer, and when a third device has the note open.
 
