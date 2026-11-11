@@ -55,6 +55,7 @@ server again unless the entry says so.
 | --- | --- |
 | A note came back as a conflict copy | [A conflict copy appeared](#a-conflict-copy-appeared) |
 | A note or file never arrives on another device | [A file is not syncing](#a-file-is-not-syncing) |
+| `did not send "<file>": ... it is too large to sync, and none of it was sent` | [A file is too large to sync](#a-file-is-too-large-to-sync) |
 | On a computer, a change made while Obsidian's window is minimized or behind other windows arrives minutes later | [Changes wait while Obsidian is in the background](#changes-wait-while-obsidian-is-in-the-background) |
 | The status stays at `syncing 1 file` and another device's change to a note does not appear | [A note stays at syncing 1 file](#a-note-stays-at-syncing-1-file) |
 | This computer's changes reach your other devices, but theirs stop arriving here, or **Sync now** says `waiting for` a sync step | [Changes from your other devices stop arriving](#changes-from-your-other-devices-stop-arriving) |
@@ -1391,6 +1392,33 @@ selection are not synced in either direction.
    down. On a vault with a long history this takes a while.
 
 ![The Sync folders on this device section: Folder selection set to Whole vault, the Selected folders box, and the Save button](assets/settings-sync-folders.png)
+
+## A file is too large to sync
+
+**What you see.** A notice, and the status bar, say `did not send "<file>": at
+<size> it is too large to sync, and none of it was sent.` The rest of the
+vault keeps syncing.
+
+**Why it happens.** One version of a file lists every piece the file was cut
+into, and a server stores that list in at most 1 MiB, encrypted. A piece is 1
+to 8 MiB, cut where the content decides, so the largest file that fits is
+between about 4.7 and 38 GiB: about 19 GiB for most files. From 1.1.13 the
+plugin measures the list before it sends anything and refuses a file whose
+list would not fit. Up to 1.1.12 it uploaded the whole file first, which could
+take hours, and only then was the version refused.
+
+A file between about 4.7 and 38 GiB is read once, without sending anything, to
+find where its pieces are cut. A device that refused a file reads it again only
+after the file changes.
+
+**How to fix it.**
+
+1. Move the file out of the synced folders, or out of the vault. **Sync
+   folders on this device** in the plugin's settings shows which folders sync.
+2. Or split it into files smaller than about 4 GiB each; every file under that
+   always fits.
+3. Archives, disk images and videos rarely belong in a notes vault; keep them
+   in a backup instead.
 
 ## A large file another program changed stays old on your other devices
 
