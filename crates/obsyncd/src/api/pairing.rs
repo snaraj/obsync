@@ -964,6 +964,26 @@ pub fn envelope(
             ("decision", Val::word("activated")),
         ],
     );
+    // ONE PLAIN LINE FOR A DEVICE THAT JOINED (#321): its short id and its
+    // platform, which a pod log's reader can act on. Never its name or its
+    // address, which only the dashboard shows, to a signed-in admin.
+    let platform = app.store.device(&authed.id).map(|d| d.platform);
+    app.log.info(
+        "device_joined",
+        &[
+            ("device", Val::device(&authed.id)),
+            (
+                "platform",
+                Val::word(
+                    super::devices::PLATFORMS
+                        .into_iter()
+                        .find(|known| platform.as_deref() == Some(*known))
+                        .unwrap_or("unknown"),
+                ),
+            ),
+            ("method", Val::word("pairing")),
+        ],
+    );
     let Value::Object(mut fields) = seal.value() else {
         unreachable!("sealed packet is an object")
     };
