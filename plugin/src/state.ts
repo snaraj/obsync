@@ -540,10 +540,27 @@ function readEnvelope(raw: string, installationId: string): SecretEnvelope {
 }
 
 /**
+ * ONE FILE ID, ONE FOLDER KEY (issue #375). A folder's file id is derived
+ * from the path it was first published at, and a re-case moves its record to
+ * the new spelling with that id (`sync/pull.ts`, `recaseFolder`), so the same
+ * id can be written under a second key. Two keys for one id is a stale one
+ * beside the live one, and a reconcile pass owes a removal for the stale key:
+ * that tombstone retires the live folder on every other device. So a key
+ * written for an id forgets every other key holding it, and answers which.
+ */
+function claimFolder(folders: Record<string, FolderRecord>, path: string, record: FolderRecord): string[] {
+  const displaced = Object.keys(folders).filter((other) => other !== path && folders[other]?.fileId === record.fileId);
+  for (const other of displaced) delete folders[other];
+  folders[path] = record;
+  return displaced;
+}
+
+/**
  * Parse noncritical bookkeeping onto defaults. State.open validates identity
  * and credential persistence separately before this data reaches the engine.
+ * `healed` collects the folder keys a saved file held twice (`claimFolder`).
  */
-export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
+export function parseData(loaded: unknown, isMobile: boolean, healed: string[] = []): ObsyncData {
   const data = defaultData(isMobile);
   if (!isRecord(loaded)) return data;
   // A damaged restriction must never fall back to the whole vault. Refuse
@@ -601,7 +618,9 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
       // reach the vault, so a path it names is input, not memory.
       if (!isVaultPath(path) || !isRecord(record)) continue;
       if (typeof record["fileId"] !== "string" || typeof record["versionId"] !== "string") continue;
-      data.folders[path] = { fileId: record["fileId"], versionId: record["versionId"] };
+      // A file saved before 1.1.13 can hold one folder under two spellings
+      // (#375): read back as `setFolder` writes, the later key keeps the id.
+      healed.push(...claimFolder(data.folders, path, { fileId: record["fileId"], versionId: record["versionId"] }));
     }
   }
   // Both of these are the device's own bookkeeping about work in flight, and
@@ -926,6 +945,9 @@ export class State {
    */
   keysLost: { dataRevision: number; secretRevision: number } | null = null;
 
+  /** Folder keys the load forgot because a later one held the same id (#375); the engine's start says so. */
+  healedFolders = 0;
+
   static async open(
     store: Store, isMobile: boolean, secrets: SecretStore,
     onFailure: (error: StateStorageError) => void = () => {},
@@ -935,6 +957,7 @@ export class State {
   ): Promise<State> {
     let state: State | undefined;
     let migrate = false;
+    const healed: string[] = [];
     const claim = lease.holder = {};
     const fresh = (data: ObsyncData): State => {
       const id = hex(randomBytes(16));
@@ -955,7 +978,7 @@ export class State {
       if (loaded != null && !isRecord(loaded)) throw new StateStorageError("invalid_metadata");
       const metadata = loaded ?? {};
       let data: ObsyncData;
-      try { data = parseData(metadata, isMobile); }
+      try { data = parseData(metadata, isMobile, healed); }
       catch (error) {
         throw new StateStorageError("invalid_sync_folders", error instanceof Error ? error.message : "Invalid saved folder selection; sync is stopped.");
       }
@@ -998,6 +1021,7 @@ export class State {
           state.currentCustody = verifiedCustody;
           state.wrapped = wrapped;
           state.cleanupPending = wrapped && metadata["credentialCleanupPending"] === true;
+          state.healedFolders = healed.length;
           held.hold(ref);
           await state.finishDesktopMigration();
           held.hold(state.reference());
@@ -1043,6 +1067,7 @@ export class State {
       if (state?.failure !== failure) onFailure(failure);
       throw failure;
     }
+    state.healedFolders = healed.length;
     if (migrate) {
       await state.save();
       held.hold(state.reference());
@@ -1554,8 +1579,9 @@ export class State {
     return this.data.folders[path];
   }
 
-  setFolder(path: string, record: FolderRecord): void {
-    this.data.folders[path] = record;
+  /** Record a folder, and answer the keys that held its id until now (`claimFolder`). */
+  setFolder(path: string, record: FolderRecord): string[] {
+    const displaced = claimFolder(this.data.folders, path, record);
     delete this.data.graves[record.fileId];
     // A RECORD WRITTEN FOR THIS FOLDER ENDS ITS RETIREMENT. The receiving
     // rule is "the tombstone for this folder's record has been applied and no
@@ -1563,6 +1589,20 @@ export class State {
     // `admitFolderRecord`), and this is every writer of one -- the feed's own
     // create, a re-case, and this device's own publication.
     delete this.data.retiredRoots[path];
+    return displaced;
+  }
+
+  /**
+   * The folder records a rename of `from` to `to` covers -- `from` itself and
+   * every one beneath it, in key order -- each with the name it takes. ONE
+   * answer for the pull's re-case and this device's own rename (`sync/pull.ts`,
+   * `recaseFolder`; `sync/engine.ts`, `folderRenamed`), so the two cannot
+   * cover different trees.
+   */
+  folderTree(from: string, to: string): [string, string][] {
+    return Object.keys(this.data.folders)
+      .filter((path) => path === from || path.startsWith(`${from}/`))
+      .map((path) => [path, to + path.slice(from.length)]);
   }
 
   forgetFolder(path: string): void {

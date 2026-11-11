@@ -1249,6 +1249,10 @@ export class SyncEngine {
         current.generation !== mapKeys.fileId || state.data.vrk !== vrk) throw new Error("engine: suite2 authority changed");
     const dropped = this.options.state.data.dropped;
     for (const [path, mark] of Object.entries(dropped)) if (mark === UNVERIFIED_LANDING) delete dropped[path];
+    if (state.healedFolders > 0) {
+      host.log(`folder path_class=folder decision=forgot reason=same_file_id at=load count=${state.healedFolders}`);
+      state.healedFolders = 0;
+    }
     if (this.cancelled) return;
     const deviceNames = new Map<string, string>();
     this.contextValue = {
@@ -2246,7 +2250,6 @@ export class SyncEngine {
     // construction: the second call finds no selected folder left to move
     // and returns.
     this.followSelection(from, to);
-    const recorded = Object.keys(this.need().state.data.folders);
     // THE FOLDER RECORD IS A WIRE BARRIER FOR A RENAME BY CAPITALISATION
     // ALONE. Only a folder record can re-case a directory on a host that
     // folds case, so a move that overtakes it is refused there with a notice
@@ -2258,8 +2261,10 @@ export class SyncEngine {
     // this folder's record needs it: everything beneath it moved with the
     // directory entry, and the receiver carries those records along.
     const barrier = caseOnly(from, to);
-    for (const path of [from, ...recorded.filter((candidate) => candidate.startsWith(`${from}/`))]) {
-      const target = to + path.slice(from.length);
+    // The tree a received re-case moves (`State.folderTree`), the folder
+    // itself first, whether or not it has a record yet.
+    const tree = this.need().state.folderTree(from, to).filter(([path]) => path !== from);
+    for (const [path, target] of [[from, to] as [string, string], ...tree]) {
       // A FOLDER THAT LEFT THE SCOPE IS NOT A FOLDER THAT WAS DELETED, and a
       // selected folder can now be the one that left: its record is this
       // device's (`trackedFolder`), and its new name may be one no device
