@@ -44,7 +44,7 @@
 import { sealScope, type SyncContext } from "./engine";
 import { encryptChunk2, openRecord, sealRecord } from "../seal2";
 import { readManifestSeal2 } from "../sealWire";
-import { GRAVES_MAX, type FileRecord as FileState } from "../state";
+import { GRAVES_MAX, type FileRecord as FileState, type FolderRecord } from "../state";
 import { CHUNK_MAX, chunkStream } from "../chunker";
 import {
   Bytes,
@@ -181,6 +181,16 @@ export class PathGone extends Error {
 export function bury(context: SyncContext, fileId: string, versionId: string, path: string, folder: boolean, ts?: number): void {
   const dropped = context.state.bury(fileId, { versionId, path, folder, ...(ts === undefined ? {} : { ts }) });
   if (dropped > 0) context.host.log(`grave decision=dropped reason=cap dropped=${dropped} budget=${GRAVES_MAX}`);
+}
+
+/**
+ * Record a folder, and say when that forgot the same folder under another
+ * spelling (issue #375; `state.ts`, `claimFolder`). No path in the line: a
+ * folder's name is vault content.
+ */
+export function recordFolder(context: SyncContext, path: string, record: FolderRecord): void {
+  const forgot = context.state.setFolder(path, record).length;
+  if (forgot > 0) context.host.log(`folder path_class=folder decision=forgot reason=same_file_id count=${forgot} file=${record.fileId}`);
 }
 
 /** SHA-256 over the concatenated sids: a size-independent content identity. */
@@ -863,7 +873,7 @@ export async function pushFolder(context: SyncContext, path: string, recreate = 
     ack = await postManifest(context, fileId, ack.ack.heads, [], manifest, 0, false);
     reason = "recreated";
   }
-  context.state.setFolder(path, { fileId, versionId: ack.versionId });
+  recordFolder(context, path, { fileId, versionId: ack.versionId });
   await context.state.save();
   context.host.log(`folder path_class=folder decision=published reason=${reason} version=${ack.versionId}`);
   return ack.versionId;
