@@ -20,6 +20,7 @@ server again unless the entry says so.
 | A second sync icon, red with a line through it, sits beside obsync's | [Reading the status bar](#reading-the-status-bar) |
 | The status bar shows a cloud with a line through it, and nothing syncs | [The device cannot reach the server](#the-device-cannot-reach-the-server) |
 | "Use your server's https address", or on a phone "Mobile Obsidian only reaches HTTPS servers"; **Check** says "Server URL was not saved" | [Obsidian asks for an https address](#obsidian-asks-for-an-https-address) |
+| "This device's Server URL is a plain HTTP address, so obsync sends nothing to it" | [Obsidian asks for an https address](#obsidian-asks-for-an-https-address) |
 | **Check** takes about a minute, then says the server is unreachable | [Check says the server cannot be reached](#check-says-the-server-cannot-be-reached) |
 | One device connects and another does not, or a browser warns about the certificate | [The certificate is not trusted on this device](#the-certificate-is-not-trusted-on-this-device) |
 | obsync says the certificate was made for another name, or **Check** says nothing answered while a browser says the certificate is not valid for this name | [The certificate is for another name](#the-certificate-is-for-another-name) |
@@ -204,6 +205,12 @@ On a phone or tablet:
 If you select **Check** before you correct the address, Check says the same
 thing, after "Server URL was not saved:", and asks no server. It does not
 ask the address saved before either.
+
+From 1.1.13, an address saved before this rule, or written into obsync's data
+file by hand, is refused too. When obsync starts with one, it says once, and
+the status bar keeps saying until the address changes:
+
+> This device's Server URL is a plain HTTP address, so obsync sends nothing to it: every request would cross the network unencrypted. Change it to your server's https address in obsync's settings, under Server.
 
 ![Check selected with the refused address still in Server URL: the notice reads Server URL was not saved, then asks for the https address](assets/check-server-url-not-saved.png)
 
