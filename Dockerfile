@@ -61,7 +61,7 @@ COPY --from=plugin /src/plugin/dist/styles.css /styles.css
 # The index digest was independently rechecked on 2026-10-13.
 # The compiler below remains selected by rust-toolchain.toml.
 # ---------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM docker.io/library/rust:1.99.0-slim-trixie@sha256:2752b332db73fdbb7dc576f06c82ed1f312005784ef913d7e04a28f5f55dc581 AS server
+FROM --platform=$BUILDPLATFORM docker.io/library/rust:1.100.0-slim-trixie@sha256:e9d95b74296f7126a83ae3d041aeaba1ff4c478f13abc5cc034fcf7c131c3d4a AS server
 ARG TARGETARCH
 ENV CARGO_TERM_COLOR=never
 WORKDIR /src
